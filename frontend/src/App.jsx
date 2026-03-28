@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 
-const API = 'https://gym.cryark.net'
+const API = 'https://gym-api.cryark.net'
 
 // ─── BRAND TOKENS ────────────────────────────────────────────────────────────
 const BRAND = {
