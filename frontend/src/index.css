@@ -29,10 +29,15 @@
   --display:   'Space Grotesk', 'Inter', sans-serif;
 }
 
-html, body, #root {
+html, body {
   min-height: 100vh;
   background: var(--bg);
 }
+/* NOTE: #root must NOT get its own opaque background. It sits at z-index 1
+   above the aurora (body::before, z-index 0); an opaque fill here would paint
+   over the gradient and leave the frosted-glass panels with nothing but flat
+   black to blur — i.e. no diffusion. Keep the base color on html/body only. */
+#root { min-height: 100vh; }
 
 body {
   font-family: var(--font);
