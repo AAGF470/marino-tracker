@@ -456,9 +456,16 @@ function HistoricalViewer({ history, rooms }) {
 // ─────────────────────────────────────────────────────────────────────────────
 function Footer() {
   return (
-    <footer style={{ marginTop: 56, padding: '28px clamp(20px, 5vw, 44px)', borderTop: '1px solid var(--line-soft)', display: 'flex', flexWrap: 'wrap', gap: 12, justifyContent: 'space-between', alignItems: 'center' }}>
+    <footer style={{ marginTop: 56, padding: '28px clamp(20px, 5vw, 44px)', borderTop: '1px solid var(--line-soft)', display: 'flex', flexWrap: 'wrap', gap: '10px 24px', justifyContent: 'space-between', alignItems: 'center' }}>
       <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: C.dim }}>© 2026 CRYARK · Marino Tracker</span>
-      <span style={{ ...label, fontSize: 10, color: C.teal }}>✦ Verified project by AG</span>
+      <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: C.dim, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span>Designed &amp; built by</span>
+        <a href="https://guillensolutions.com" target="_blank" rel="noreferrer"
+          style={{ color: C.teal, fontWeight: 700, textDecoration: 'none', fontFamily: 'var(--display)', letterSpacing: 0.3 }}>
+          Guillen Solutions ↗
+        </a>
+        <span style={{ color: C.dim, opacity: 0.6 }}>· project by AG</span>
+      </span>
       <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: C.dim }}>Data — Northeastern University Recreation</span>
     </footer>
   )
