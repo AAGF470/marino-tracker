@@ -1,583 +1,555 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 
-const API = 'https://gym-api.cryark.net'
+// ─────────────────────────────────────────────────────────────────────────────
+// Marino Tracker — live + historical NEU gym occupancy.
+//
+// Self-contained: React only, no component-library dependency. Visual language
+// is "frosted glass / Framer" — glass panels (see .glass in index.css) over an
+// aurora backdrop. Data comes from the same API as before:
+//   GET /api/live                       → current occupancy per room
+//   GET /api/history?days=N             → per-poll history rows
+// The 90-day history is ~40MB, so the dashboard aggregates a small recent
+// window for its charts and only pulls the full 90 days on the download click.
+// ─────────────────────────────────────────────────────────────────────────────
 
-// ─── BRAND TOKENS ────────────────────────────────────────────────────────────
-const BRAND = {
-  bg:         '#030307',
-  bg1:        '#0d0d14',
-  bg2:        '#12121c',
-  border:     '#1a1a2e',
-  text:       '#FAFBFC',          // pure white — names, headers
-  textBright: '#ffffff',          // brightest white — important data
-  muted:      '#3A4F66',          // off-focus, secondary labels
-  dim:        '#232338',          // very dim — subtle elements
-  blue:       '#0085FF',
-  teal:       '#00FFA3',
-  navy:       '#192a3d',
+const API           = 'https://gym-api.cryark.net'
+const HISTORY_DAYS   = 14   // window fetched for the weekly/hourly aggregates
+const DOWNLOAD_DAYS  = 90   // full export on the download button
+const LIVE_REFRESH   = 300000 // 5 min
+
+// ─── palette (JS mirror of index.css vars, for SVG/canvas colors) ────────────
+const C = {
+  teal: '#00ffa3', blue: '#0a84ff', violet: '#8b7bff', amber: '#ffc24a', red: '#ff5a6a',
+  text: '#f4f6fb', sub: '#9aa3b8', dim: '#5b647d', line: 'rgba(255,255,255,0.09)',
 }
 
-// ─── BAND LOGIC ──────────────────────────────────────────────────────────────
-function getBand(pct) {
-  if (pct < 30) return { label: 'QUIET',    color: BRAND.teal }
-  if (pct < 60) return { label: 'MODERATE', color: BRAND.blue }
-  if (pct < 85) return { label: 'BUSY',     color: '#e8f54a' }
-  return              { label: 'PACKED',   color: '#f54a4a' }
+// ─── helpers ─────────────────────────────────────────────────────────────────
+const pctOf   = r => (r.capacity > 0 ? (r.count / r.capacity) * 100 : 0)
+const isSquash = name => name.includes('SquashBusters')
+const clean = name => name.replace('Marino Center ', '').replace('SquashBusters ', '')
+const short = name => name.replace('Marino Center ', '').replace('SquashBusters ', 'SB ')
+
+function band(pct) {
+  if (pct < 30) return { label: 'QUIET',    c: C.teal }
+  if (pct < 60) return { label: 'MODERATE', c: C.blue }
+  if (pct < 85) return { label: 'BUSY',     c: C.amber }
+  return              { label: 'PACKED',   c: C.red }
 }
 
-// ─── HEADER ──────────────────────────────────────────────────────────────────
-// Frosted glass sticky header — links back to cryark.net
+const hourLabel = h => `${((h + 11) % 12) + 1}${h < 12 ? 'a' : 'p'}`
+const DOW       = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+const DOW_SHORT = { Monday: 'Mon', Tuesday: 'Tue', Wednesday: 'Wed', Thursday: 'Thu', Friday: 'Fri', Saturday: 'Sat', Sunday: 'Sun' }
+
+function matchRoom(name, sel) {
+  if (sel === 'all')        return true
+  if (sel === 'fac:squash') return isSquash(name)
+  if (sel === 'fac:marino') return !isSquash(name)
+  return name === sel
+}
+
+// ─── aggregation (client-side over the recent window) ────────────────────────
+function weeklyAverages(history, sel) {
+  const buckets = Object.fromEntries(DOW.map(d => [d, []]))
+  for (const r of history) {
+    if (!matchRoom(r.room_name, sel)) continue
+    if (buckets[r.day_of_week]) buckets[r.day_of_week].push(pctOf(r))
+  }
+  return DOW.map(d => {
+    const a = buckets[d]
+    return { day: d, short: DOW_SHORT[d], pct: a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0, n: a.length }
+  })
+}
+
+function hourlyAverages(history, sel) {
+  const buckets = Array.from({ length: 24 }, () => [])
+  for (const r of history) {
+    if (!matchRoom(r.room_name, sel)) continue
+    const h = new Date(r.polled_at).getHours()
+    if (!Number.isNaN(h)) buckets[h].push(pctOf(r))
+  }
+  return buckets.map((a, hour) => ({ hour, pct: a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0, n: a.length }))
+}
+
+function summarize(history, sel) {
+  const w = weeklyAverages(history, sel)
+  const h = hourlyAverages(history, sel)
+  const busiestDay = w.reduce((m, x) => (x.pct > m.pct ? x : m), w[0])
+  const open = h.filter(x => x.n > 0 && x.pct > 1.5)
+  const busiestHour = open.reduce((m, x) => (x.pct > m.pct ? x : m), open[0] || { hour: 0, pct: 0 })
+  const quietHour   = open.reduce((m, x) => (x.pct < m.pct ? x : m), open[0] || { hour: 0, pct: 0 })
+  const vals = history.filter(r => matchRoom(r.room_name, sel)).map(pctOf)
+  const avg = vals.length ? vals.reduce((s, x) => s + x, 0) / vals.length : 0
+  return { busiestDay, busiestHour, quietHour, avg, samples: vals.length }
+}
+
+// ─── CSV export ──────────────────────────────────────────────────────────────
+function toCSV(rows) {
+  const cols = ['room_name', 'count', 'capacity', 'pct_full', 'polled_at', 'day_of_week', 'temperature', 'weather', 'academic_term']
+  const esc = v => {
+    if (v == null) return ''
+    const s = String(v)
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  const body = rows.map(r => {
+    const pct = r.capacity > 0 ? Math.round((r.count / r.capacity) * 100) : ''
+    return [r.room_name, r.count, r.capacity, pct, r.polled_at, r.day_of_week, r.temperature, r.weather, r.academic_term].map(esc).join(',')
+  })
+  return [cols.join(','), ...body].join('\n')
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Small shared UI atoms
+// ─────────────────────────────────────────────────────────────────────────────
+const label = { fontFamily: 'var(--display)', fontSize: 11, letterSpacing: 2.5, fontWeight: 700, textTransform: 'uppercase' }
+
+function SectionLabel({ children, accent = C.teal }) {
+  return (
+    <div style={{ ...label, color: accent, display: 'flex', alignItems: 'center', gap: 14, marginBottom: 18 }}>
+      {children}
+      <div style={{ flex: 1, height: 1, background: 'linear-gradient(90deg, var(--line), transparent)' }} />
+    </div>
+  )
+}
+
+function RoomSelect({ rooms, value, onChange }) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)}>
+      <option value="all">All rooms</option>
+      <option value="fac:marino">Marino — all rooms</option>
+      <option value="fac:squash">SquashBusters — all rooms</option>
+      <optgroup label="Individual rooms">
+        {rooms.map(r => <option key={r} value={r}>{clean(r)}</option>)}
+      </optgroup>
+    </select>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Header — frosted sticky bar
+// ─────────────────────────────────────────────────────────────────────────────
 function Header() {
   return (
-    <header style={{
-      background:        'rgba(3, 3, 7, 0.55)',
-      backdropFilter:    'blur(18px)',
-      WebkitBackdropFilter: 'blur(18px)',
-      borderBottom:      `1px solid rgba(255,255,255,0.06)`,
-      padding:           '0 40px',
-      height:            70,
-      display:           'flex',
-      alignItems:        'center',
-      justifyContent:    'space-between',
-      position:          'sticky',
-      top:               0,
-      zIndex:            100,
+    <header className="glass" style={{
+      position: 'sticky', top: 0, zIndex: 100,
+      borderRadius: 0, borderLeft: 'none', borderRight: 'none', borderTop: 'none',
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      padding: '0 clamp(20px, 5vw, 44px)', height: 66,
     }}>
-      {/* Logo — links to main site */}
       <a href="https://cryark.net/home/" target="_blank" rel="noreferrer"
-        style={{ display: 'flex', alignItems: 'center', textDecoration: 'none' }}>
-        <img
-          src="https://cryark.net/wp-content/uploads/2026/01/CRYARK-scaled.png"
-          alt="CRYARK"
-          style={{ height: 36, objectFit: 'contain' }}
-          onError={e => { e.target.style.display = 'none' }}
-        />
+        style={{ display: 'flex', alignItems: 'center' }}>
+        <img src="https://cryark.net/wp-content/uploads/2026/01/CRYARK-scaled.png" alt="CRYARK"
+          style={{ height: 30, objectFit: 'contain' }} onError={e => { e.target.style.display = 'none' }} />
       </a>
-
-      {/* Page title in header nav */}
-      <span style={{
-        fontFamily:    'Comfortaa, sans-serif',
-        fontSize:      13,
-        color:         BRAND.teal,
-        letterSpacing: 3,
-        fontWeight:    700,
-      }}>
+      <span style={{ ...label, fontSize: 12, color: C.text, display: 'flex', alignItems: 'center', gap: 9 }}>
+        <span style={{ width: 7, height: 7, borderRadius: '50%', background: C.teal, boxShadow: `0 0 12px ${C.teal}` }} />
         MARINO TRACKER
       </span>
     </header>
   )
 }
 
-// ─── FOOTER ──────────────────────────────────────────────────────────────────
-// Site footer — update links here when cross-linking to other pages
+// ─────────────────────────────────────────────────────────────────────────────
+// Hero — title + at-a-glance live busyness + download
+// ─────────────────────────────────────────────────────────────────────────────
+function Hero({ live, lastUpdate, onDownload, dlState }) {
+  const active = live.filter(r => !r.is_closed && r.capacity > 0)
+  const overall = active.length ? active.reduce((s, r) => s + pctOf(r), 0) / active.length : 0
+  const totalPeople = live.reduce((s, r) => s + (r.count || 0), 0)
+  const b = band(overall)
+
+  return (
+    <section className="rise" style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 40 }}>
+      <div style={{ minWidth: 260 }}>
+        <div style={{ ...label, color: C.sub, marginBottom: 12 }}>Northeastern Recreation · Live</div>
+        <h1 style={{ fontFamily: 'var(--display)', fontSize: 'clamp(30px, 5vw, 46px)', fontWeight: 700, lineHeight: 1.04, letterSpacing: -0.5 }}>
+          How busy is the<br />gym right now?
+        </h1>
+        <div style={{ fontFamily: 'var(--mono)', fontSize: 12, color: C.dim, marginTop: 14 }}>
+          {lastUpdate ? `updated ${lastUpdate}` : 'connecting…'} · auto-refresh 5 min
+        </div>
+      </div>
+
+      {/* live busyness gauge + download */}
+      <div style={{ display: 'flex', gap: 14, alignItems: 'stretch', flexWrap: 'wrap' }}>
+        <div className="glass" style={{ padding: '18px 22px', minWidth: 190 }}>
+          <div style={{ ...label, fontSize: 10, color: C.sub, marginBottom: 10 }}>Overall right now</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            <span style={{ fontFamily: 'var(--mono)', fontSize: 40, fontWeight: 700, color: b.c, lineHeight: 1 }}>
+              {Math.round(overall)}<span style={{ fontSize: 18 }}>%</span>
+            </span>
+            <span style={{ ...label, fontSize: 11, color: b.c }}>{b.label}</span>
+          </div>
+          <div style={{ fontFamily: 'var(--mono)', fontSize: 12, color: C.sub, marginTop: 8 }}>
+            {totalPeople} people in {active.length} open spaces
+          </div>
+        </div>
+        <DownloadButton onDownload={onDownload} state={dlState} />
+      </div>
+    </section>
+  )
+}
+
+function DownloadButton({ onDownload, state }) {
+  const txt = { idle: 'Download 90-day data', loading: 'Preparing CSV…', done: 'Downloaded ✓', error: 'Failed — retry' }[state]
+  const busy = state === 'loading'
+  return (
+    <button className="glass lift" onClick={busy ? undefined : onDownload} disabled={busy}
+      style={{
+        padding: '18px 22px', minWidth: 190, textAlign: 'left', color: C.text,
+        display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 8,
+        cursor: busy ? 'progress' : 'pointer',
+        borderColor: state === 'done' ? C.teal : state === 'error' ? C.red : undefined,
+      }}>
+      <span style={{ ...label, fontSize: 10, color: C.sub }}>Full history</span>
+      <span style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 15, fontWeight: 700, fontFamily: 'var(--display)' }}>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={state === 'done' ? C.teal : C.teal} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"
+          style={{ transform: busy ? 'none' : 'translateY(1px)', animation: busy ? 'aurora 1s linear infinite' : 'none' }}>
+          <path d="M12 3v12M7 10l5 5 5-5M4 21h16" />
+        </svg>
+        {txt}
+      </span>
+      <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: C.dim }}>{DOWNLOAD_DAYS} days · CSV export</span>
+    </button>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Live occupancy card
+// ─────────────────────────────────────────────────────────────────────────────
+function OccupancyCard({ room, i }) {
+  const pct  = room.capacity > 0 ? Math.round((room.count / room.capacity) * 100) : 0
+  const b    = band(pct)
+  const closed = room.is_closed
+  const measured = room.last_updated
+    ? new Date(room.last_updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : '—'
+
+  return (
+    <div className="glass lift rise" style={{ padding: 22, position: 'relative', overflow: 'hidden', animationDelay: `${i * 40}ms`, opacity: closed ? 0.55 : 1 }}>
+      {/* accent glow strip */}
+      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 3, background: `linear-gradient(90deg, ${b.c}, transparent 80%)` }} />
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+        <span style={{ ...label, fontSize: 10, color: b.c }}>{closed ? 'CLOSED' : b.label}</span>
+        <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: C.dim }}>{measured}</span>
+      </div>
+
+      <div style={{ fontSize: 14, fontWeight: 700, color: C.text, minHeight: 40, lineHeight: 1.3, marginBottom: 12 }}>
+        {clean(room.room_name)}
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <span style={{ fontFamily: 'var(--mono)', fontSize: 44, fontWeight: 700, lineHeight: 1, color: closed ? C.dim : b.c }}>
+          {room.count}
+        </span>
+        <span style={{ fontFamily: 'var(--mono)', fontSize: 14, color: C.sub }}>/ {room.capacity}</span>
+      </div>
+
+      {/* progress track */}
+      <div style={{ marginTop: 16, height: 6, borderRadius: 20, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+        <div style={{
+          width: `${Math.min(pct, 100)}%`, height: '100%', borderRadius: 20,
+          background: `linear-gradient(90deg, ${b.c}, ${b.c}cc)`, boxShadow: `0 0 12px ${b.c}66`,
+          transition: 'width 1s cubic-bezier(.2,.7,.2,1)',
+        }} />
+      </div>
+      <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: C.sub, marginTop: 8 }}>{pct}% full</div>
+    </div>
+  )
+}
+
+function FacilityGroup({ title, rooms }) {
+  if (!rooms.length) return null
+  return (
+    <div style={{ marginBottom: 34 }}>
+      <SectionLabel accent={C.sub}>{title}</SectionLabel>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 16 }}>
+        {rooms.map((room, i) => <OccupancyCard key={room.room_name} room={room} i={i} />)}
+      </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Weekly averages — the headline diagram (replaces the raw time-series)
+// ─────────────────────────────────────────────────────────────────────────────
+function WeeklyChart({ history, rooms }) {
+  const [sel, setSel] = useState('all')
+  const [mounted, setMounted] = useState(false)
+  const data = useMemo(() => weeklyAverages(history, sel), [history, sel])
+  useEffect(() => { setMounted(false); const t = setTimeout(() => setMounted(true), 60); return () => clearTimeout(t) }, [sel, history])
+
+  const maxPct = Math.max(10, ...data.map(d => d.pct))
+  const axisMax = Math.ceil(maxPct / 10) * 10
+
+  return (
+    <div className="glass" style={{ padding: 'clamp(20px, 3vw, 30px)', marginBottom: 22 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap', marginBottom: 22 }}>
+        <div>
+          <div style={{ fontFamily: 'var(--display)', fontSize: 18, fontWeight: 700 }}>Average by day of week</div>
+          <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: C.dim, marginTop: 5 }}>
+            mean % full · last {HISTORY_DAYS} days
+          </div>
+        </div>
+        <RoomSelect rooms={rooms} value={sel} onChange={setSel} />
+      </div>
+
+      {/* bars */}
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 'clamp(6px, 1.5vw, 16px)', height: 200 }}>
+        {data.map(d => {
+          const b = band(d.pct)
+          const hPct = mounted ? (d.pct / axisMax) * 100 : 0
+          return (
+            <div key={d.day} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%' }}>
+              <div style={{ flex: 1, width: '100%', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+                <div style={{ position: 'relative', width: '100%', maxWidth: 46, height: '100%', display: 'flex', alignItems: 'flex-end' }}>
+                  {/* value label */}
+                  <div style={{
+                    position: 'absolute', bottom: `calc(${hPct}% + 6px)`, left: 0, right: 0, textAlign: 'center',
+                    fontFamily: 'var(--mono)', fontSize: 12, fontWeight: 700, color: b.c,
+                    opacity: mounted ? 1 : 0, transition: 'opacity .5s .4s, bottom .8s cubic-bezier(.2,.7,.2,1)',
+                  }}>{Math.round(d.pct)}%</div>
+                  {/* bar */}
+                  <div style={{
+                    width: '100%', height: `${hPct}%`, minHeight: d.n ? 3 : 0, borderRadius: '8px 8px 4px 4px',
+                    background: `linear-gradient(180deg, ${b.c}, ${b.c}55)`, boxShadow: `0 0 20px ${b.c}44`,
+                    transition: 'height .8s cubic-bezier(.2,.7,.2,1)',
+                  }} title={`${d.day}: ${Math.round(d.pct)}% full (${d.n} readings)`} />
+                </div>
+              </div>
+              <div style={{ ...label, fontSize: 10, color: C.sub, marginTop: 12 }}>{d.short}</div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Historical viewer — pick a room, explore its hour-of-day rhythm + stats
+// ─────────────────────────────────────────────────────────────────────────────
+function StatTile({ k, v, sub, accent = C.text }) {
+  return (
+    <div className="glass" style={{ padding: '16px 18px', flex: '1 1 130px' }}>
+      <div style={{ ...label, fontSize: 9.5, color: C.sub, marginBottom: 8 }}>{k}</div>
+      <div style={{ fontFamily: 'var(--display)', fontSize: 22, fontWeight: 700, color: accent }}>{v}</div>
+      {sub && <div style={{ fontFamily: 'var(--mono)', fontSize: 10.5, color: C.dim, marginTop: 4 }}>{sub}</div>}
+    </div>
+  )
+}
+
+function HistoricalViewer({ history, rooms }) {
+  const [sel, setSel] = useState('all')
+  const svgRef = useRef(null)
+  const [hover, setHover] = useState(null)
+
+  const hours = useMemo(() => hourlyAverages(history, sel), [history, sel])
+  const stat  = useMemo(() => summarize(history, sel), [history, sel])
+
+  // only render the range that actually has readings (skip dead overnight hours)
+  const active = hours.filter(h => h.n > 0)
+  const firstH = active.length ? active[0].hour : 6
+  const lastH  = active.length ? active[active.length - 1].hour : 23
+  const shown  = hours.filter(h => h.hour >= firstH && h.hour <= lastH)
+
+  const W = 920, H = 240, padL = 40, padR = 16, padT = 16, padB = 30
+  const cw = W - padL - padR, ch = H - padT - padB
+  const maxY = Math.max(20, Math.ceil(Math.max(...shown.map(h => h.pct), 10) / 10) * 10)
+  const n = Math.max(shown.length - 1, 1)
+  const xAt = i => padL + (i / n) * cw
+  const yAt = v => padT + ch - (v / maxY) * ch
+
+  const linePts = shown.map((h, i) => `${xAt(i)},${yAt(h.pct)}`)
+  const areaPath = shown.length
+    ? `M ${xAt(0)},${yAt(0)} ` + shown.map((h, i) => `L ${xAt(i)},${yAt(h.pct)}`).join(' ') + ` L ${xAt(shown.length - 1)},${yAt(0)} Z`
+    : ''
+
+  const onMove = e => {
+    const svg = svgRef.current; if (!svg || !shown.length) return
+    const rect = svg.getBoundingClientRect()
+    const xRel = (e.clientX - rect.left) / rect.width * W
+    const i = Math.round((xRel - padL) / cw * n)
+    if (i < 0 || i >= shown.length) { setHover(null); return }
+    setHover({ i, h: shown[i] })
+  }
+
+  const yTicks = [0, 0.5, 1]
+
+  return (
+    <div className="glass" style={{ padding: 'clamp(20px, 3vw, 30px)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap', marginBottom: 22 }}>
+        <div>
+          <div style={{ fontFamily: 'var(--display)', fontSize: 18, fontWeight: 700 }}>Explore the history</div>
+          <div style={{ fontFamily: 'var(--mono)', fontSize: 11, color: C.dim, marginTop: 5 }}>
+            average occupancy by time of day · {stat.samples.toLocaleString()} readings
+          </div>
+        </div>
+        <RoomSelect rooms={rooms} value={sel} onChange={setSel} />
+      </div>
+
+      {/* stat tiles */}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 24 }}>
+        <StatTile k="Busiest day"   v={DOW_SHORT[stat.busiestDay.day] || '—'} sub={`${Math.round(stat.busiestDay.pct)}% avg full`} accent={C.amber} />
+        <StatTile k="Peak hour"     v={hourLabel(stat.busiestHour.hour)}       sub={`${Math.round(stat.busiestHour.pct)}% avg full`} accent={C.red} />
+        <StatTile k="Quietest hour" v={hourLabel(stat.quietHour.hour)}         sub={`${Math.round(stat.quietHour.pct)}% avg full`} accent={C.teal} />
+        <StatTile k="Overall avg"   v={`${Math.round(stat.avg)}%`}             sub="full, all hours" />
+      </div>
+
+      {/* hourly area chart */}
+      {shown.length > 1 ? (
+        <svg ref={svgRef} width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: 'block', cursor: 'crosshair' }}
+          onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+          <defs>
+            <linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%"  stopColor={C.teal} stopOpacity="0.35" />
+              <stop offset="100%" stopColor={C.teal} stopOpacity="0" />
+            </linearGradient>
+          </defs>
+
+          {/* y gridlines */}
+          {yTicks.map(t => (
+            <g key={t}>
+              <line x1={padL} y1={yAt(t * maxY)} x2={W - padR} y2={yAt(t * maxY)} stroke={C.line} strokeWidth="1" />
+              <text x={padL - 8} y={yAt(t * maxY)} textAnchor="end" dominantBaseline="central" fill={C.dim} fontSize="10" fontFamily="var(--mono)">
+                {Math.round(t * maxY)}%
+              </text>
+            </g>
+          ))}
+
+          <path d={areaPath} fill="url(#areaFill)" />
+          <polyline points={linePts.join(' ')} fill="none" stroke={C.teal} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round"
+            style={{ filter: `drop-shadow(0 0 6px ${C.teal}66)` }} />
+
+          {/* x labels every ~3h */}
+          {shown.filter((_, i) => i % 3 === 0).map(h => {
+            const i = shown.indexOf(h)
+            return <text key={h.hour} x={xAt(i)} y={H - 10} textAnchor="middle" fill={C.dim} fontSize="10" fontFamily="var(--mono)">{hourLabel(h.hour)}</text>
+          })}
+
+          {/* hover marker */}
+          {hover && (
+            <g>
+              <line x1={xAt(hover.i)} y1={padT} x2={xAt(hover.i)} y2={H - padB} stroke="#fff" strokeOpacity="0.18" strokeDasharray="4 4" />
+              <circle cx={xAt(hover.i)} cy={yAt(hover.h.pct)} r="5" fill={C.teal} stroke="#06070d" strokeWidth="2" />
+            </g>
+          )}
+        </svg>
+      ) : (
+        <div style={{ padding: '40px 0', textAlign: 'center', color: C.dim, fontFamily: 'var(--mono)', fontSize: 13 }}>
+          Not enough history yet for this selection.
+        </div>
+      )}
+
+      {/* hover readout */}
+      {hover && (
+        <div style={{ fontFamily: 'var(--mono)', fontSize: 12, color: C.sub, marginTop: 12 }}>
+          <span style={{ color: C.text, fontWeight: 700 }}>{hourLabel(hover.h.hour)}</span> — avg{' '}
+          <span style={{ color: band(hover.h.pct).c, fontWeight: 700 }}>{Math.round(hover.h.pct)}% full</span>{' '}
+          <span style={{ color: C.dim }}>· {hover.h.n} readings</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 function Footer() {
   return (
-    <footer style={{
-      background:   BRAND.bg1,
-      borderTop:    `1px solid ${BRAND.border}`,
-      padding:      '24px 40px',
-      marginTop:    60,
-      display:      'flex',
-      alignItems:   'center',
-      justifyContent: 'space-between',
-      flexWrap:     'wrap',
-      gap:          12,
-    }}>
-      {/* Copyright */}
-      <span style={{
-        fontFamily: 'Comfortaa, sans-serif',
-        fontSize:   12,
-        color:      BRAND.muted,
-        fontWeight: 700,
-      }}>
-        © 2026 CRYARK — Marino Tracker
-      </span>
-
-      {/* Project credit */}
-      <span style={{
-        fontFamily: 'Comfortaa, sans-serif',
-        fontSize:   11,
-        color:      BRAND.teal,
-        fontWeight: 700,
-        letterSpacing: 1,
-      }}>
-        ✦ Verified Project by AG
-      </span>
-
-      {/* Data source note */}
-      <span style={{
-        fontFamily: 'monospace',
-        fontSize:   11,
-        color:      BRAND.dim,
-      }}>
-        Data sourced from Northeastern University Recreation
-      </span>
+    <footer style={{ marginTop: 56, padding: '28px clamp(20px, 5vw, 44px)', borderTop: '1px solid var(--line-soft)', display: 'flex', flexWrap: 'wrap', gap: 12, justifyContent: 'space-between', alignItems: 'center' }}>
+      <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: C.dim }}>© 2026 CRYARK · Marino Tracker</span>
+      <span style={{ ...label, fontSize: 10, color: C.teal }}>✦ Verified project by AG</span>
+      <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: C.dim }}>Data — Northeastern University Recreation</span>
     </footer>
   )
 }
 
-// ─── OCCUPANCY CARD ──────────────────────────────────────────────────────────
-// Individual room card — shows live count, capacity bar, last measured time
-function OccupancyCard({ room }) {
-  const pct      = Math.round((room.count / room.capacity) * 100)
-  const band     = getBand(pct)
-
-  // format last_updated into readable local time
-  const lastMeasured = room.last_updated
-    ? new Date(room.last_updated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : '—'
-
-  // clean display name — strip facility prefix
-  const displayName = room.room_name
-    .replace('Marino Center ', '')
-    .replace('SquashBusters ', '')
-
-  return (
-    <div style={{
-      background:   BRAND.bg2,
-      border:       `1px solid ${BRAND.border}`,
-      borderTop:    `3px solid ${band.color}`,
-      borderRadius: 10,
-      padding:      '20px 24px',
-      color:        BRAND.text,
-      fontFamily:   'Comfortaa, sans-serif',
-    }}>
-
-      {/* Status badge */}
-      <div style={{
-        fontSize:      10,
-        color:         band.color,
-        letterSpacing: 3,
-        fontWeight:    700,
-        marginBottom:  10,
-      }}>
-        {band.label}
-      </div>
-
-      {/* Room name — pure white, bold */}
-      <div style={{
-        fontSize:     14,
-        color:        BRAND.textBright,
-        fontWeight:   700,
-        marginBottom: 14,
-        minHeight:    38,
-        lineHeight:   1.3,
-      }}>
-        {displayName}
-      </div>
-
-      {/* Count — large, colored */}
-      <div style={{
-        fontSize:    48,
-        color:       band.color,
-        lineHeight:  1,
-        fontFamily:  'monospace',
-        fontWeight:  700,
-      }}>
-        {room.count}
-      </div>
-
-      {/* Capacity label — bright white, important data */}
-      <div style={{
-        fontSize:     12,
-        color:        BRAND.textBright,
-        fontWeight:   700,
-        margin:       '6px 0 14px',
-      }}>
-        / {room.capacity} capacity
-      </div>
-
-      {/* Progress bar */}
-      <div style={{
-        background:   BRAND.bg1,
-        borderRadius: 2,
-        height:       4,
-        overflow:     'hidden',
-      }}>
-        <div style={{
-          width:        `${Math.min(pct, 100)}%`,
-          height:       '100%',
-          background:   band.color,
-          borderRadius: 2,
-          transition:   'width 1s ease',
-        }} />
-      </div>
-
-      {/* Percentage + last measured */}
-      <div style={{
-        display:        'flex',
-        justifyContent: 'space-between',
-        alignItems:     'center',
-        marginTop:      8,
-      }}>
-        <span style={{ fontSize: 11, color: BRAND.muted, fontWeight: 700 }}>
-          {pct}% full
-        </span>
-        <span style={{ fontSize: 10, color: BRAND.muted }}>
-          measured {lastMeasured}
-        </span>
-      </div>
-
-    </div>
-  )
+function Skeleton({ h = 160 }) {
+  return <div className="skeleton" style={{ height: h, width: '100%' }} />
 }
 
-// ─── FACILITY GROUP ───────────────────────────────────────────────────────────
-// Groups cards under a labeled section with a divider line
-function FacilityGroup({ title, rooms }) {
-  if (!rooms.length) return null
-  return (
-    <div style={{ marginBottom: 40 }}>
-
-      {/* Section label + divider */}
-      <div style={{
-        fontFamily:     'Comfortaa, sans-serif',
-        fontSize:       11,
-        color:          BRAND.teal,
-        letterSpacing:  3,
-        fontWeight:     700,
-        marginBottom:   16,
-        display:        'flex',
-        alignItems:     'center',
-        gap:            12,
-      }}>
-        {title}
-        <div style={{ flex: 1, height: 1, background: BRAND.border }} />
-      </div>
-
-      {/* Card grid */}
-      <div style={{
-        display:             'grid',
-        gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))',
-        gap:                 16,
-      }}>
-        {rooms.map(room => (
-          <OccupancyCard key={room.room_name} room={room} />
-        ))}
-      </div>
-
-    </div>
-  )
-}
-
-// ─── HISTORY CHART ────────────────────────────────────────────────────────────
-// SVG line chart — hover anywhere to see values at that time
-function HistoryChart({ history }) {
-  const svgRef = useRef(null)
-  const [tooltip, setTooltip] = useState(null)
-
-  if (!history || history.length === 0) {
-    return (
-      <div style={{
-        background:   BRAND.bg2,
-        border:       `1px solid ${BRAND.border}`,
-        borderRadius: 10,
-        padding:      40,
-        color:        BRAND.muted,
-        fontFamily:   'Comfortaa, sans-serif',
-        fontSize:     13,
-        textAlign:    'center',
-        fontWeight:   700,
-      }}>
-        No historical data yet — check back after a few polls.
-      </div>
-    )
-  }
-
-  const rooms    = [...new Set(history.map(r => r.room_name))]
-  const colors   = [BRAND.teal, BRAND.blue, '#e8f54a', '#f54a4a', '#a78bfa', '#60a5fa', '#f472b6', '#fb923c']
-  const times    = [...new Set(history.map(r => r.polled_at))].sort()
-  const maxCount = Math.max(...history.map(r => r.count), 1)
-
-  const W = 900, H = 220, padL = 44, padB = 32, padR = 20, padT = 10
-  const chartW = W - padL - padR
-  const chartH = H - padB - padT
-
-  const xScale = i => padL + (i / Math.max(times.length - 1, 1)) * chartW
-  const yScale = v => padT + chartH - (v / maxCount) * chartH
-  const yTicks = [0, 0.25, 0.5, 0.75, 1]
-
-  const handleMouseMove = (e) => {
-    const svg  = svgRef.current
-    if (!svg) return
-    const rect = svg.getBoundingClientRect()
-    const xRel = (e.clientX - rect.left) / rect.width * W
-    const idx  = Math.round((xRel - padL) / chartW * (times.length - 1))
-    if (idx < 0 || idx >= times.length) { setTooltip(null); return }
-    const time = times[idx]
-    const vals = rooms.map(room => {
-      const r = history.find(h => h.room_name === room && h.polled_at === time)
-      return { room, count: r ? r.count : null }
-    }).filter(v => v.count !== null)
-    setTooltip({ x: xScale(idx), time, vals })
-  }
-
-  return (
-    <div style={{
-      background:   BRAND.bg2,
-      border:       `1px solid ${BRAND.border}`,
-      borderRadius: 10,
-      padding:      24,
-      marginBottom: 40,
-    }}>
-
-      {/* Chart title */}
-      <div style={{
-        fontFamily:    'Comfortaa, sans-serif',
-        fontSize:      11,
-        color:         BRAND.teal,
-        letterSpacing: 3,
-        fontWeight:    700,
-        marginBottom:  16,
-      }}>
-        HISTORICAL — LAST 7 DAYS
-      </div>
-
-      {/* SVG chart */}
-      <svg
-        ref={svgRef}
-        width="100%"
-        viewBox={`0 0 ${W} ${H}`}
-        style={{ display: 'block', cursor: 'crosshair' }}
-        onMouseMove={handleMouseMove}
-        onMouseLeave={() => setTooltip(null)}
-      >
-        {/* Y grid lines + labels */}
-        {yTicks.map(v => (
-          <g key={v}>
-            <line
-              x1={padL} y1={yScale(v * maxCount)}
-              x2={W - padR} y2={yScale(v * maxCount)}
-              stroke={BRAND.border} strokeWidth={1}
-            />
-            <text
-              x={padL - 6} y={yScale(v * maxCount)}
-              textAnchor="end" dominantBaseline="central"
-              fill={BRAND.muted} fontSize={10} fontFamily="monospace"
-            >
-              {Math.round(v * maxCount)}
-            </text>
-          </g>
-        ))}
-
-        {/* Room lines */}
-        {rooms.map((room, ri) => {
-          const roomData = history
-            .filter(r => r.room_name === room)
-            .sort((a, b) => a.polled_at.localeCompare(b.polled_at))
-          const points = roomData.map(r => {
-            const ti = times.indexOf(r.polled_at)
-            return ti >= 0 ? `${xScale(ti)},${yScale(r.count)}` : null
-          }).filter(Boolean).join(' ')
-          return points ? (
-            <polyline key={room}
-              points={points}
-              fill="none"
-              stroke={colors[ri % colors.length]}
-              strokeWidth={1.5}
-              opacity={0.85}
-            />
-          ) : null
-        })}
-
-        {/* Hover vertical line */}
-        {tooltip && (
-          <line
-            x1={tooltip.x} y1={padT}
-            x2={tooltip.x} y2={H - padB}
-            stroke="#ffffff" strokeWidth={1}
-            opacity={0.15} strokeDasharray="4 4"
-          />
-        )}
-
-        {/* X axis baseline */}
-        <line
-          x1={padL} y1={H - padB}
-          x2={W - padR} y2={H - padB}
-          stroke={BRAND.border} strokeWidth={1}
-        />
-      </svg>
-
-      {/* Hover tooltip box */}
-      {tooltip && (
-        <div style={{
-          background:   BRAND.bg1,
-          border:       `1px solid ${BRAND.border}`,
-          borderRadius: 6,
-          padding:      '10px 14px',
-          fontFamily:   'monospace',
-          fontSize:      11,
-          color:         BRAND.text,
-          marginTop:     10,
-          display:       'inline-block',
-          minWidth:      220,
-        }}>
-          <div style={{ color: BRAND.muted, marginBottom: 6, fontWeight: 700 }}>
-            {new Date(tooltip.time).toLocaleString()}
-          </div>
-          {tooltip.vals.map(v => (
-            <div key={v.room} style={{
-              display:        'flex',
-              justifyContent: 'space-between',
-              gap:            16,
-              color:          colors[rooms.indexOf(v.room) % colors.length],
-              marginBottom:   2,
-            }}>
-              <span>
-                {v.room.replace('Marino Center ', '').replace('SquashBusters ', 'SB ')}
-              </span>
-              <span style={{ fontWeight: 700 }}>{v.count}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Legend */}
-      <div style={{
-        display:   'flex',
-        flexWrap:  'wrap',
-        gap:       '10px 20px',
-        marginTop: 16,
-      }}>
-        {rooms.map((room, ri) => (
-          <div key={room} style={{
-            display:    'flex',
-            alignItems: 'center',
-            gap:        6,
-            fontFamily: 'Comfortaa, sans-serif',
-            fontSize:   11,
-            color:      BRAND.muted,
-            fontWeight: 700,
-          }}>
-            <div style={{
-              width:        20,
-              height:       2,
-              background:   colors[ri % colors.length],
-              borderRadius: 1,
-            }} />
-            {room.replace('Marino Center ', '').replace('SquashBusters ', 'SB ')}
-          </div>
-        ))}
-      </div>
-
-    </div>
-  )
-}
-
-// ─── ROOT APP ─────────────────────────────────────────────────────────────────
-// Main layout — fetches live + historical data every 5 minutes
+// ─────────────────────────────────────────────────────────────────────────────
+// Root
+// ─────────────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [live, setLive]       = useState([])
-  const [history, setHistory] = useState([])
-  const [lastUpdate, setLastUpdate] = useState(null)
+  const [live, setLive]         = useState([])
+  const [history, setHistory]   = useState([])
+  const [loadingHist, setLoadingHist] = useState(true)
+  const [lastUpdate, setLastUpdate]   = useState(null)
+  const [dlState, setDlState]   = useState('idle')
 
-  const fetchData = async () => {
+  const fetchLive = async () => {
     try {
-      const [liveRes, histRes] = await Promise.all([
-        fetch(`${API}/api/live`),
-        fetch(`${API}/api/history`),
-      ])
-      setLive(await liveRes.json())
-      setHistory(await histRes.json())
-      setLastUpdate(new Date().toLocaleTimeString())
-    } catch (e) {
-      console.error('Fetch failed:', e)
-    }
+      const res = await fetch(`${API}/api/live`)
+      setLive(await res.json())
+      setLastUpdate(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
+    } catch (e) { console.error('live fetch failed:', e) }
   }
 
   useEffect(() => {
-    fetchData()
-    const id = setInterval(fetchData, 300000)
+    fetchLive()
+    const id = setInterval(fetchLive, LIVE_REFRESH)
+    // history: one bounded fetch for the aggregate views
+    ;(async () => {
+      try {
+        const res = await fetch(`${API}/api/history?days=${HISTORY_DAYS}`)
+        setHistory(await res.json())
+      } catch (e) { console.error('history fetch failed:', e) }
+      finally { setLoadingHist(false) }
+    })()
     return () => clearInterval(id)
   }, [])
 
-  // ─── split live data by facility ─────────────────────────────────────────
-  const marino = live.filter(r => !r.room_name.includes('SquashBusters'))
-  const squash = live.filter(r =>  r.room_name.includes('SquashBusters'))
+  const downloadFull = async () => {
+    setDlState('loading')
+    try {
+      const res = await fetch(`${API}/api/history?days=${DOWNLOAD_DAYS}`)
+      if (!res.ok) throw new Error(res.status)
+      const data = await res.json()
+      const blob = new Blob([toCSV(data)], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `marino-tracker-${DOWNLOAD_DAYS}d-${new Date().toISOString().slice(0, 10)}.csv`
+      document.body.appendChild(a); a.click(); a.remove()
+      URL.revokeObjectURL(url)
+      setDlState('done'); setTimeout(() => setDlState('idle'), 2500)
+    } catch (e) { console.error('download failed:', e); setDlState('error'); setTimeout(() => setDlState('idle'), 3000) }
+  }
+
+  const rooms  = useMemo(() => [...new Set(history.map(r => r.room_name))].sort(), [history])
+  const marino = live.filter(r => !isSquash(r.room_name))
+  const squash = live.filter(r =>  isSquash(r.room_name))
 
   return (
-    <div style={{
-      background:    BRAND.bg,
-      minHeight:     '100vh',
-      display:       'flex',
-      flexDirection: 'column',
-    }}>
-
-      {/* ─── HEADER ──────────────────────────────────────────────────────── */}
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       <Header />
 
-      {/* ─── MAIN CONTENT ────────────────────────────────────────────────── */}
-      <main style={{ flex: 1, padding: '40px 40px 0' }}>
+      <main style={{ flex: 1, width: '100%', maxWidth: 1180, margin: '0 auto', padding: 'clamp(28px, 5vw, 48px) clamp(20px, 5vw, 44px) 0' }}>
+        <Hero live={live} lastUpdate={lastUpdate} onDownload={downloadFull} dlState={dlState} />
 
-        {/* Page title + last updated */}
-        <div style={{ marginBottom: 40 }}>
-          <div style={{
-            fontFamily:    'Comfortaa, sans-serif',
-            fontSize:      24,
-            color:         BRAND.textBright,
-            fontWeight:    700,
-            letterSpacing: 1,
-            marginBottom:  6,
-          }}>
-            Gym Congestion Tracker
-          </div>
-          <div style={{
-            fontFamily: 'monospace',
-            fontSize:   11,
-            color:      BRAND.muted,
-          }}>
-            {lastUpdate ? `last updated ${lastUpdate}` : 'connecting...'}
-            {' · '}refreshes every 5 minutes
-          </div>
-        </div>
-
-        {/* ─── LIVE OCCUPANCY SECTION ──────────────────────────────────── */}
-        <div style={{
-          fontFamily:    'Comfortaa, sans-serif',
-          fontSize:      11,
-          color:         BRAND.muted,
-          letterSpacing: 3,
-          fontWeight:    700,
-          marginBottom:  24,
-        }}>
-          LIVE OCCUPANCY
-        </div>
-
+        {/* live occupancy */}
+        <SectionLabel>Live occupancy</SectionLabel>
         {live.length === 0
-          ? <div style={{
-              color:      BRAND.muted,
-              fontFamily: 'monospace',
-              marginBottom: 40,
-            }}>
-              Connecting to API...
+          ? <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 16, marginBottom: 34 }}>
+              {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} h={190} />)}
             </div>
           : <>
-              {/* ─── MARINO CARDS ──────────────────────────────────────── */}
-              <FacilityGroup title="MARINO RECREATION CENTER" rooms={marino} />
+              <FacilityGroup title="Marino Recreation Center" rooms={marino} />
+              <FacilityGroup title="SquashBusters" rooms={squash} />
+            </>}
 
-              {/* ─── SQUASHBUSTERS CARDS ───────────────────────────────── */}
-              <FacilityGroup title="SQUASHBUSTERS" rooms={squash} />
-            </>
-        }
-
-        {/* ─── HISTORICAL CHART SECTION ────────────────────────────────── */}
-        <div style={{
-          fontFamily:    'Comfortaa, sans-serif',
-          fontSize:      11,
-          color:         BRAND.muted,
-          letterSpacing: 3,
-          fontWeight:    700,
-          marginBottom:  16,
-        }}>
-          HISTORICAL DATA
-        </div>
-        <HistoryChart history={history} />
-
+        {/* historical section */}
+        <SectionLabel accent={C.blue}>Patterns &amp; history</SectionLabel>
+        {loadingHist
+          ? <><div style={{ marginBottom: 22 }}><Skeleton h={280} /></div><Skeleton h={320} /></>
+          : <>
+              <WeeklyChart history={history} rooms={rooms} />
+              <HistoricalViewer history={history} rooms={rooms} />
+            </>}
       </main>
 
-      {/* ─── FOOTER ──────────────────────────────────────────────────────── */}
       <Footer />
-
     </div>
   )
 }
