@@ -91,6 +91,11 @@ body::after {
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.06) inset,
     0 20px 50px -24px rgba(0, 0, 0, 0.8);
+  /* Force a dedicated compositor layer. Chromium (Vivaldi/Chrome/Opera) drops
+     backdrop-filter on live/GPU-pressured pages unless the element is promoted;
+     Safari/WebKit renders it either way. translateZ(0) is the promotion. */
+  transform: translateZ(0);
+  will-change: backdrop-filter;
 }
 
 /* subtle interactive lift for hoverable cards */
