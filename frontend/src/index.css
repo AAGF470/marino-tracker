@@ -84,18 +84,17 @@ body::after {
 /* ─── GLASS PRIMITIVE ─────────────────────────────────────────────────────────*/
 .glass {
   background: var(--glass);
+  /* Write ONLY the standard property. Lightning CSS (see vite.config.js targets)
+     ADDS `-webkit-backdrop-filter` for older Safari automatically. Hand-writing
+     both made the minifier dedupe them and keep only `-webkit-`, which Chromium
+     (Vivaldi/Chrome) ignores → glass rendered in Safari only. */
   backdrop-filter: blur(22px) saturate(150%);
-  -webkit-backdrop-filter: blur(22px) saturate(150%);
   border: 1px solid var(--line);
   border-radius: 20px;
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.06) inset,
     0 20px 50px -24px rgba(0, 0, 0, 0.8);
-  /* Force a dedicated compositor layer. Chromium (Vivaldi/Chrome/Opera) drops
-     backdrop-filter on live/GPU-pressured pages unless the element is promoted;
-     Safari/WebKit renders it either way. translateZ(0) is the promotion. */
-  transform: translateZ(0);
-  will-change: backdrop-filter;
+  transform: translateZ(0); /* own compositor layer — keeps the blur stable */
 }
 
 /* subtle interactive lift for hoverable cards */
