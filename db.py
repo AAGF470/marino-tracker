@@ -83,6 +83,19 @@ def init_db() -> None:
     """)
 
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS quiet_windows (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_name     TEXT,
+            kind          TEXT,
+            day_of_week   TEXT,
+            start_time    TEXT,
+            end_time      TEXT,
+            generated_at  TEXT,
+            model_version INTEGER
+        )
+    """)
+
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS calendar (
             key         TEXT PRIMARY KEY,
             value       TEXT,
@@ -109,6 +122,32 @@ def init_db() -> None:
             predicted_count INTEGER,
             generated_at    TEXT,
             model_version   INTEGER
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS marino_baseline (
+            room_name       TEXT,
+            slot            INTEGER,
+            day_of_week     TEXT,
+            time_of_day     TEXT,
+            predicted_count INTEGER,
+            generated_at    TEXT,
+            model_version   INTEGER,
+            PRIMARY KEY (room_name, slot)
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS squash_baseline (
+            room_name       TEXT,
+            slot            INTEGER,
+            day_of_week     TEXT,
+            time_of_day     TEXT,
+            predicted_count INTEGER,
+            generated_at    TEXT,
+            model_version   INTEGER,
+            PRIMARY KEY (room_name, slot)
         )
     """)
 
