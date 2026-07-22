@@ -11,19 +11,20 @@
 }
 
 :root {
-  --bg:        #06070d;
-  --text:      #f4f6fb;
-  --sub:       #9aa3b8;
-  --dim:       #5b647d;
-  --line:      rgba(255, 255, 255, 0.09);
-  --line-soft: rgba(255, 255, 255, 0.055);
-  --teal:      #00ffa3;
-  --blue:      #0a84ff;
-  --violet:    #8b7bff;
-  --amber:     #ffc24a;
-  --red:       #ff5a6a;
-  --glass:     rgba(255, 255, 255, 0.045);
-  --glass-hi:  rgba(255, 255, 255, 0.07);
+  --bg:        #07080d;
+  --text:      #eef1f7;
+  --sub:       #99a1b3;
+  --dim:       #5d6478;
+  --line:      rgba(255, 255, 255, 0.07);
+  --line-soft: rgba(255, 255, 255, 0.045);
+  --teal:      #3ddfa9;
+  --blue:      #5aa2ff;
+  --violet:    #9b8cff;
+  --amber:     #eab766;
+  --red:       #f06a76;
+  --cyan:      #7dd3fc;
+  --glass:     rgba(255, 255, 255, 0.032);
+  --glass-hi:  rgba(255, 255, 255, 0.055);
   --font:      'Inter', system-ui, -apple-system, sans-serif;
   --mono:      'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   --display:   'Space Grotesk', 'Inter', sans-serif;
@@ -57,11 +58,10 @@ body::before {
   z-index: 0;
   pointer-events: none;
   background:
-    radial-gradient(38vmax 38vmax at 18% 12%, rgba(0, 255, 163, 0.16), transparent 60%),
-    radial-gradient(42vmax 42vmax at 85% 20%, rgba(10, 132, 255, 0.18), transparent 62%),
-    radial-gradient(46vmax 46vmax at 60% 95%, rgba(139, 123, 255, 0.14), transparent 60%);
-  filter: saturate(1.15);
-  animation: aurora 26s ease-in-out infinite alternate;
+    radial-gradient(40vmax 40vmax at 18% 12%, rgba(61, 223, 169, 0.09), transparent 60%),
+    radial-gradient(44vmax 44vmax at 85% 20%, rgba(90, 162, 255, 0.10), transparent 62%),
+    radial-gradient(48vmax 48vmax at 60% 95%, rgba(155, 140, 255, 0.08), transparent 60%);
+  animation: aurora 34s ease-in-out infinite alternate;
 }
 body::after {
   content: '';
@@ -88,20 +88,17 @@ body::after {
      ADDS `-webkit-backdrop-filter` for older Safari automatically. Hand-writing
      both made the minifier dedupe them and keep only `-webkit-`, which Chromium
      (Vivaldi/Chrome) ignores → glass rendered in Safari only. */
-  backdrop-filter: blur(22px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(130%);
   border: 1px solid var(--line);
-  border-radius: 20px;
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.06) inset,
-    0 20px 50px -24px rgba(0, 0, 0, 0.8);
+  border-radius: 16px;
+  box-shadow: 0 14px 40px -28px rgba(0, 0, 0, 0.7);
   transform: translateZ(0); /* own compositor layer — keeps the blur stable */
 }
 
 /* subtle interactive lift for hoverable cards */
-.lift { transition: transform .35s cubic-bezier(.2,.7,.2,1), border-color .35s, background .35s; }
+.lift { transition: border-color .3s, background .3s; }
 .lift:hover {
-  transform: translateY(-3px);
-  border-color: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.13);
   background: var(--glass-hi);
 }
 
@@ -127,12 +124,12 @@ body::after {
 select {
   font-family: var(--font);
   color: var(--text);
-  background: rgba(255,255,255,0.05);
+  background: rgba(255,255,255,0.035);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 8px 34px 8px 13px;
+  border-radius: 9px;
+  padding: 7px 32px 7px 12px;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
   cursor: pointer;
   outline: none;
   appearance: none;
@@ -146,6 +143,61 @@ select:hover { border-color: rgba(255,255,255,0.2); }
 select option { background: #12131c; color: var(--text); }
 
 button { font-family: var(--font); cursor: pointer; border: none; background: none; }
+
+/* ─── APP SHELL (sidebar + main) ──────────────────────────────────────────────
+   Desktop: fixed-height sticky sidebar on the left, scrolling main pane.
+   Mobile (≤880px): sidebar becomes a top bar with horizontal nav tabs. */
+.layout { display: flex; min-height: 100vh; }
+
+.sidebar {
+  position: sticky; top: 0;
+  height: 100vh; width: 236px; flex-shrink: 0;
+  display: flex; flex-direction: column; gap: 22px;
+  padding: 24px 18px 20px;
+  background: rgba(255, 255, 255, 0.018);
+  backdrop-filter: blur(18px) saturate(130%);
+  border-right: 1px solid var(--line-soft);
+}
+
+.main {
+  flex: 1; min-width: 0;
+  padding: 26px clamp(18px, 3.5vw, 40px) 40px;
+  max-width: 1280px;
+}
+
+.nav-btn {
+  display: flex; align-items: center; gap: 11px;
+  width: 100%; padding: 10px 12px;
+  border-radius: 10px; border: 1px solid transparent;
+  color: var(--sub); font-size: 13.5px; font-weight: 500;
+  text-align: left; transition: color .2s, background .2s, border-color .2s;
+}
+.nav-btn:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+.nav-btn.active {
+  color: var(--text); background: rgba(255,255,255,0.045);
+  border-color: var(--line);
+}
+.nav-btn svg { flex-shrink: 0; }
+
+@media (max-width: 880px) {
+  .layout { flex-direction: column; }
+  .sidebar {
+    position: sticky; top: 0; z-index: 100;
+    height: auto; width: 100%;
+    flex-direction: row; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+    padding: 12px 16px;
+    border-right: none; border-bottom: 1px solid var(--line-soft);
+  }
+  .sidebar .side-gauge { display: none; }
+  .sidebar .side-download { display: none; }
+  .sidebar .side-credits { display: none; }
+  .sidebar nav {
+    display: flex; flex-direction: row !important; gap: 4px !important;
+    width: 100%; overflow-x: auto; scrollbar-width: none;
+  }
+  .sidebar nav::-webkit-scrollbar { display: none; }
+  .nav-btn { width: auto; padding: 8px 12px; white-space: nowrap; }
+}
 
 /* ─── SCROLLBAR ───────────────────────────────────────────────────────────────*/
 ::-webkit-scrollbar { width: 11px; height: 11px; }
